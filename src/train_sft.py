@@ -83,7 +83,7 @@ def main():
         save_steps=args.save_steps,
         save_total_limit=3,
         fp16=True,
-        max_seq_length=args.max_seq_length,
+        max_length=args.max_seq_length,
         dataset_text_field="text",
         report_to=args.report_to,
         lr_scheduler_type="cosine",

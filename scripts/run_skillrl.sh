@@ -1,0 +1,25 @@
+#!/bin/bash
+# Run SkillRL training with recursive skill evolution
+set -e
+
+cd "$(dirname "$0")/.."
+
+python src/train_skillrl.py \
+    --model qwen2-0.5b \
+    --train_data data/sample_train.jsonl \
+    --output_dir outputs/skillrl \
+    --num_evolution_rounds 3 \
+    --evolution_threshold 0.4 \
+    --max_new_skills 2 \
+    --top_k_skills 4 \
+    --num_epochs 1 \
+    --batch_size 2 \
+    --gradient_accumulation_steps 8 \
+    --learning_rate 1e-5 \
+    --num_generations 4 \
+    --max_completion_length 256 \
+    --max_prompt_length 768 \
+    --lora_r 16 \
+    --lora_alpha 32 \
+    --logging_steps 5 \
+    --save_steps 100

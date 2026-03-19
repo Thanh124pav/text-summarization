@@ -1,0 +1,30 @@
+# DPO Training Configuration
+model: "qwen2-0.5b"
+train_data: "data/sample_dpo.jsonl"
+val_data: null
+output_dir: "outputs/dpo"
+
+# Training hyperparameters
+num_epochs: 1
+batch_size: 2
+gradient_accumulation_steps: 8
+learning_rate: 5e-6
+beta: 0.1
+
+# Sequence lengths
+max_length: 1024
+max_prompt_length: 512
+
+# LoRA
+use_lora: true
+lora_r: 16
+lora_alpha: 32
+
+# Quantization
+load_in_4bit: false
+load_in_8bit: false
+
+# Logging
+logging_steps: 10
+save_steps: 100
+report_to: "none"

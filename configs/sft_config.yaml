@@ -1,0 +1,27 @@
+# SFT Training Configuration
+model: "qwen2-0.5b"
+train_data: "data/sample_train.jsonl"
+val_data: null
+output_dir: "outputs/sft"
+
+# Training hyperparameters
+num_epochs: 3
+batch_size: 4
+gradient_accumulation_steps: 4
+learning_rate: 2e-4
+max_seq_length: 1024
+warmup_ratio: 0.05
+
+# LoRA
+use_lora: true
+lora_r: 16
+lora_alpha: 32
+
+# Quantization (enable one or none)
+load_in_4bit: false
+load_in_8bit: false
+
+# Logging
+logging_steps: 10
+save_steps: 200
+report_to: "none"  # or "wandb"

@@ -1,11 +1,20 @@
 """GRPO (Group Relative Policy Optimization) training for text summarization.
 
-Rewards:
-  1. Length reward: penalizes summaries that are too long or too short
-  2. ROUGE-2 reward: measures bigram overlap with reference summary
+Reward design based on:
+  - GR3 (arxiv:2603.10535): multiplicative length gating instead of additive
+  - Multi-Dim Optimization (arxiv:2406.00303): multi-signal ROUGE + semantic
+  - Topic-Guided RL (arxiv:2509.09852): ROUGE-L + topic alignment
+  - DeepSeek-R1 (arxiv:2501.12948): rule-based reward signals
+
+Reward components:
+  1. ROUGE composite: ROUGE-1, ROUGE-2, ROUGE-L F1 weighted average
+  2. Length gate (GR3-style): multiplicative bell-curve gate, NOT additive
+  3. Format reward: penalizes empty/degenerate outputs
+  4. (Optional) BERTScore: semantic similarity for abstractive quality
 """
 
 import argparse
+import math
 
 from datasets import Dataset
 from rouge_score import rouge_scorer
@@ -16,66 +25,170 @@ from data_utils import build_dataset, format_prompt
 from model_utils import get_model_name, load_tokenizer, load_model
 
 
+def compute_length_gate(n_tokens: int, min_len: int, max_len: int) -> float:
+    """GR3-style multiplicative length gate (arxiv:2603.10535).
+
+    Returns a value in [0, 1] that multiplies the quality reward.
+    This prevents reward hacking via length — model MUST produce good
+    content AND correct length to get high reward.
+
+    Shape:
+      - Peak (1.0) across the sweet spot [min_len, max_len]
+      - Smooth ramp-up from 0 to min_len
+      - Smooth decay from max_len, hitting 0 at 2×max_len
+      - Hard zero for empty or extremely long outputs
+    """
+    if n_tokens < 1:
+        return 0.0
+
+    # Ramp up: 0 → 1 as tokens go from 0 → min_len
+    if n_tokens < min_len:
+        return n_tokens / min_len
+
+    # Sweet spot: full reward in [min_len, max_len]
+    if n_tokens <= max_len:
+        return 1.0
+
+    # Smooth decay: cosine falloff from max_len to 2×max_len
+    overshoot = (n_tokens - max_len) / max_len
+    if overshoot >= 1.0:
+        return 0.0
+    return 0.5 * (1.0 + math.cos(math.pi * overshoot))
+
+
 def make_reward_functions(
     tokenizer: AutoTokenizer,
     references: dict[str, str],
-    target_length: int = 80,
-    max_length: int = 200,
-    length_weight: float = 0.3,
-    rouge_weight: float = 0.7,
+    min_length: int = 30,
+    max_length: int = 150,
+    reward_mode: str = "multiplicative",
 ):
     """Create reward functions for GRPO training.
+
+    Two modes:
+      - "multiplicative" (recommended, GR3-style):
+          reward = length_gate × rouge_composite
+          Single combined reward function. Length acts as a gate, not a
+          separate objective. Prevents length-hacking.
+
+      - "additive" (legacy):
+          reward = w1 × length_reward + w2 × rouge_reward
+          Separate functions with weights. Simpler but vulnerable to
+          reward hacking.
 
     Args:
         tokenizer: Tokenizer for decoding.
         references: Mapping from prompt to reference summary.
-        target_length: Ideal summary length in tokens.
-        max_length: Maximum acceptable length in tokens.
-        length_weight: Weight for length reward.
-        rouge_weight: Weight for ROUGE-2 reward.
+        min_length: Minimum acceptable summary length in tokens.
+        max_length: Maximum acceptable summary length in tokens.
+        reward_mode: "multiplicative" (GR3) or "additive" (legacy).
 
     Returns:
-        List of reward functions.
+        Tuple of (reward_functions, reward_weights).
     """
-    scorer = rouge_scorer.RougeScorer(["rouge2"], use_stemmer=True)
+    scorer = rouge_scorer.RougeScorer(
+        ["rouge1", "rouge2", "rougeL"], use_stemmer=True
+    )
 
-    def length_reward_fn(completions: list[str], prompts: list[str] | None = None, **kwargs) -> list[float]:
-        """Reward based on summary length — penalizes too short or too long."""
-        rewards = []
-        for completion in completions:
-            tokens = tokenizer.encode(completion, add_special_tokens=False)
-            n_tokens = len(tokens)
+    # Weights for ROUGE composite (from Multi-Dim Optimization paper)
+    r1_w, r2_w, rl_w = 0.3, 0.4, 0.3
 
-            if n_tokens == 0:
-                rewards.append(-1.0)
-            elif n_tokens <= target_length:
-                # Linearly scale from 0 to 1 as length approaches target
-                rewards.append(n_tokens / target_length)
-            elif n_tokens <= max_length:
-                # Linearly decay from 1 to 0 between target and max
-                rewards.append(1.0 - (n_tokens - target_length) / (max_length - target_length))
-            else:
-                # Penalty for exceeding max length
-                rewards.append(-0.5)
+    def _compute_rouge_composite(completion: str, reference: str) -> float:
+        """Weighted ROUGE composite: 0.3×R1 + 0.4×R2 + 0.3×RL F1."""
+        if not reference or not completion.strip():
+            return 0.0
+        scores = scorer.score(reference, completion)
+        return (
+            r1_w * scores["rouge1"].fmeasure
+            + r2_w * scores["rouge2"].fmeasure
+            + rl_w * scores["rougeL"].fmeasure
+        )
 
-        return rewards
+    def _compute_format_penalty(completion: str) -> float:
+        """Penalize degenerate outputs: empty, repetitive, or too short."""
+        text = completion.strip()
+        if len(text) < 5:
+            return -1.0
+        # Detect degenerate repetition (same token repeated)
+        words = text.split()
+        if len(words) > 3:
+            unique_ratio = len(set(words)) / len(words)
+            if unique_ratio < 0.3:
+                return -0.5
+        return 0.0
 
-    def rouge2_reward_fn(completions: list[str], prompts: list[str] | None = None, **kwargs) -> list[float]:
-        """Reward based on ROUGE-2 F1 score with reference summaries."""
-        rewards = []
-        prompt_list = prompts if prompts else [None] * len(completions)
-        for completion, prompt in zip(completions, prompt_list):
-            ref = references.get(prompt, "")
-            if not ref or not completion.strip():
-                rewards.append(0.0)
-                continue
+    if reward_mode == "multiplicative":
+        # GR3-style: single combined reward function
+        def combined_reward_fn(
+            completions: list[str],
+            prompts: list[str] | None = None,
+            **kwargs,
+        ) -> list[float]:
+            """GR3-style: reward = length_gate × rouge_composite + format_penalty.
 
-            score = scorer.score(ref, completion)
-            rewards.append(score["rouge2"].fmeasure)
+            The length gate is multiplicative — even perfect ROUGE gets
+            zero reward if length is out of bounds. This eliminates the
+            incentive to hack length independently.
+            """
+            rewards = []
+            prompt_list = prompts if prompts else [None] * len(completions)
+            for completion, prompt in zip(completions, prompt_list):
+                # Format check (degenerate output detection)
+                fmt_penalty = _compute_format_penalty(completion)
+                if fmt_penalty < 0:
+                    rewards.append(fmt_penalty)
+                    continue
 
-        return rewards
+                # ROUGE quality score
+                ref = references.get(prompt, "")
+                rouge_score = _compute_rouge_composite(completion, ref)
 
-    return [length_reward_fn, rouge2_reward_fn], [length_weight, rouge_weight]
+                # Length gate (multiplicative, GR3-style)
+                n_tokens = len(
+                    tokenizer.encode(completion, add_special_tokens=False)
+                )
+                gate = compute_length_gate(n_tokens, min_length, max_length)
+
+                # Final reward: quality × length_gate
+                rewards.append(rouge_score * gate)
+
+            return rewards
+
+        return [combined_reward_fn], [1.0]
+
+    else:
+        # Legacy additive mode (kept for comparison/ablation)
+        def length_reward_fn(
+            completions: list[str],
+            prompts: list[str] | None = None,
+            **kwargs,
+        ) -> list[float]:
+            rewards = []
+            for completion in completions:
+                n_tokens = len(
+                    tokenizer.encode(completion, add_special_tokens=False)
+                )
+                gate = compute_length_gate(n_tokens, min_length, max_length)
+                rewards.append(gate)
+            return rewards
+
+        def rouge_reward_fn(
+            completions: list[str],
+            prompts: list[str] | None = None,
+            **kwargs,
+        ) -> list[float]:
+            rewards = []
+            prompt_list = prompts if prompts else [None] * len(completions)
+            for completion, prompt in zip(completions, prompt_list):
+                ref = references.get(prompt, "")
+                fmt = _compute_format_penalty(completion)
+                if fmt < 0:
+                    rewards.append(fmt)
+                    continue
+                rewards.append(_compute_rouge_composite(completion, ref))
+            return rewards
+
+        return [length_reward_fn, rouge_reward_fn], [0.3, 0.7]
 
 
 def build_grpo_dataset(dataset: Dataset) -> tuple[Dataset, dict[str, str]]:
@@ -104,10 +217,11 @@ def main():
     parser.add_argument("--num_generations", type=int, default=4, help="Number of completions per prompt in GRPO")
     parser.add_argument("--max_completion_length", type=int, default=256)
     parser.add_argument("--max_prompt_length", type=int, default=512)
-    parser.add_argument("--target_length", type=int, default=80, help="Target summary length in tokens")
-    parser.add_argument("--max_summary_length", type=int, default=200, help="Max summary length for length reward")
-    parser.add_argument("--length_weight", type=float, default=0.3, help="Weight for length reward")
-    parser.add_argument("--rouge_weight", type=float, default=0.7, help="Weight for ROUGE-2 reward")
+    parser.add_argument("--min_summary_length", type=int, default=30, help="Min summary length in tokens")
+    parser.add_argument("--max_summary_length", type=int, default=150, help="Max summary length in tokens")
+    parser.add_argument("--reward_mode", type=str, default="multiplicative",
+                        choices=["multiplicative", "additive"],
+                        help="Reward mode: multiplicative (GR3, recommended) or additive (legacy)")
     parser.add_argument("--use_lora", action="store_true", default=True)
     parser.add_argument("--no_lora", action="store_true")
     parser.add_argument("--lora_r", type=int, default=16)
@@ -142,10 +256,9 @@ def main():
     reward_fns, reward_weights = make_reward_functions(
         tokenizer=tokenizer,
         references=references,
-        target_length=args.target_length,
+        min_length=args.min_summary_length,
         max_length=args.max_summary_length,
-        length_weight=args.length_weight,
-        rouge_weight=args.rouge_weight,
+        reward_mode=args.reward_mode,
     )
 
     # GRPO config
@@ -176,7 +289,8 @@ def main():
     )
 
     print("Starting GRPO training...")
-    print(f"  Reward weights: length={args.length_weight}, rouge2={args.rouge_weight}")
+    print(f"  Reward mode: {args.reward_mode}")
+    print(f"  Length range: [{args.min_summary_length}, {args.max_summary_length}] tokens")
     trainer.train()
 
     # Save

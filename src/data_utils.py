@@ -29,15 +29,40 @@ def build_dataset(file_path: str) -> Dataset:
     return Dataset.from_list(records)
 
 
-def format_prompt(text: str, category: str | None = None) -> str:
-    """Format input text into a summarization prompt."""
+def format_prompt(
+    text: str,
+    category: str | None = None,
+    style: str | None = None,
+) -> str:
+    """Format input text into a summarization prompt.
+
+    Args:
+        text: The document to summarize.
+        category: Optional topic category (e.g., khoa_hoc, the_thao).
+        style: Optional writing style instruction. One of:
+            bao_chi, hanh_chinh, khoa_hoc, chinh_luan, sinh_hoat.
+    """
+    parts = []
     if category:
-        return (
-            f"### Category: {category}\n"
-            f"### Document:\n{text}\n\n"
-            f"### Summary:\n"
-        )
-    return f"### Document:\n{text}\n\n### Summary:\n"
+        parts.append(f"### Category: {category}")
+    if style:
+        style_display = STYLE_DISPLAY_NAMES.get(style, style)
+        parts.append(f"### Phong cách viết: {style_display}")
+    parts.append(f"### Document:\n{text}\n")
+    parts.append("### Summary:\n")
+    return "\n".join(parts)
+
+
+# 5 writing styles for Vietnamese text
+STYLE_NAMES = ["bao_chi", "hanh_chinh", "khoa_hoc", "chinh_luan", "sinh_hoat"]
+
+STYLE_DISPLAY_NAMES = {
+    "bao_chi": "Báo chí",
+    "hanh_chinh": "Hành chính",
+    "khoa_hoc": "Khoa học",
+    "chinh_luan": "Chính luận",
+    "sinh_hoat": "Sinh hoạt hàng ngày",
+}
 
 
 def preprocess_for_sft(
@@ -109,18 +134,44 @@ def preprocess_for_dpo(dataset: Dataset) -> Dataset:
     return dataset.map(format_fn, batched=True, remove_columns=dataset.column_names)
 
 
-def preprocess_for_grpo(dataset: Dataset) -> Dataset:
+def preprocess_for_grpo(
+    dataset: Dataset,
+    with_style: bool = False,
+    seed: int = 42,
+) -> Dataset:
     """Preprocess dataset for GRPO training.
+
+    Args:
+        dataset: Raw dataset with 'input', 'output', optional 'category'.
+        with_style: If True, randomly assign a writing style to each prompt
+            and include it in the prompt text. The assigned style name is
+            stored in the 'style' column for reward computation.
+        seed: Random seed for style assignment.
 
     Returns prompts and reference summaries.
     """
+    import random
+
+    rng = random.Random(seed)
 
     def format_fn(examples):
+        n = len(examples["input"])
+        categories = examples.get("category", [None] * n)
+
+        if with_style:
+            styles = [rng.choice(STYLE_NAMES) for _ in range(n)]
+        else:
+            styles = [None] * n
+
         prompts = [
-            format_prompt(inp, cat)
-            for inp, cat in zip(examples["input"], examples.get("category", [None] * len(examples["input"])))
+            format_prompt(inp, cat, sty)
+            for inp, cat, sty in zip(examples["input"], categories, styles)
         ]
-        return {"prompt": prompts, "reference": examples["output"]}
+
+        result = {"prompt": prompts, "reference": examples["output"]}
+        if with_style:
+            result["style"] = styles
+        return result
 
     return dataset.map(format_fn, batched=True, remove_columns=dataset.column_names)
 

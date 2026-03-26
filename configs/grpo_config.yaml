@@ -15,10 +15,9 @@ max_completion_length: 256
 max_prompt_length: 512
 
 # Reward function parameters
-target_length: 80
-max_summary_length: 200
-length_weight: 0.3
-rouge_weight: 0.7
+min_summary_length: 30
+max_summary_length: 150
+reward_mode: "multiplicative"  # "multiplicative", "multiplicative_style", or "additive"
 
 # LoRA
 use_lora: true

@@ -1,0 +1,56 @@
+# GRPO + Style Reward Training Configuration
+#
+# This config trains a summarization model with 3 reward signals:
+#   1. ROUGE composite (R1 + R2 + RL) — content quality
+#   2. Length gate (GR3-style) — controls output length
+#   3. Style classifier P(target_style) — writing style accuracy
+#
+# Combined formula:
+#   reward = length_gate × (0.7 × ROUGE + 0.3 × P(style))
+#
+# The prompt randomly assigns one of 5 styles:
+#   bao_chi, hanh_chinh, khoa_hoc, chinh_luan, sinh_hoat
+
+model: "qwen2-0.5b"
+train_data: "data/bkai/train.jsonl"
+output_dir: "outputs/grpo_style"
+
+# Training hyperparameters
+num_epochs: 1
+batch_size: 2
+gradient_accumulation_steps: 8
+learning_rate: 1e-5
+
+# GRPO specific
+num_generations: 4
+max_completion_length: 256
+max_prompt_length: 512
+
+# Reward: GR3 + Style
+reward_mode: "multiplicative_style"
+min_summary_length: 30
+max_summary_length: 150
+
+# Style classifier (PhoBERT-based)
+style_classifier: "path/to/your/style-classifier-checkpoint"
+style_weight: 0.3          # P(style) weight; ROUGE gets 0.7
+style_max_length: 256
+
+# Label mapping (adjust to match your classifier's label indices)
+# Default: bao_chi=0, hanh_chinh=1, khoa_hoc=2, chinh_luan=3, sinh_hoat=4
+# Override with JSON if your classifier uses a different mapping:
+# label_map: '{"bao_chi":0,"hanh_chinh":1,"khoa_hoc":2,"chinh_luan":3,"sinh_hoat":4}'
+
+# LoRA
+use_lora: true
+lora_r: 16
+lora_alpha: 32
+
+# Quantization
+load_in_4bit: false
+load_in_8bit: false
+
+# Logging
+logging_steps: 5
+save_steps: 100
+report_to: "none"

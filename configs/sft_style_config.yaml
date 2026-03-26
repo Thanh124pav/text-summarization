@@ -1,0 +1,44 @@
+# Style-conditioned SFT for Qwen 3-4B
+#
+# Data format (JSONL):
+#   {"input": "...", "output": "...", "style": "bao_chi", "category": "kinh_te"}
+#
+# Styles: bao_chi, hanh_chinh, khoa_hoc, chinh_luan, sinh_hoat
+#
+# Pipeline:
+#   1. SFT with this config → model learns style-conditioned summarization
+#   2. GRPO with style reward → model refines style accuracy + ROUGE
+
+model: "qwen3-4b"              # or Qwen/Qwen3-4B, or local path
+train_data: "data/bkai/train.jsonl"
+val_data: "data/bkai/val.jsonl"
+output_dir: "outputs/sft_style"
+
+# Training (tuned for Qwen 3-4B + LoRA on 1x A100/A6000)
+num_epochs: 3
+batch_size: 2                   # per GPU; effective = batch_size × grad_accum
+gradient_accumulation_steps: 8  # effective batch = 16
+learning_rate: 1e-4             # good for LoRA
+warmup_ratio: 0.05
+weight_decay: 0.01
+max_seq_length: 2048
+
+# LoRA (tuned for 4B model)
+use_lora: true
+lora_r: 32                      # higher rank for style differentiation
+lora_alpha: 64
+
+# Quantization (enable for <24GB VRAM)
+load_in_4bit: false             # set true for 16GB GPU
+load_in_8bit: false
+
+# Style options
+balance_styles: true            # upsample minority styles
+use_chat_template: false        # true for Qwen3-4B-Instruct
+
+# Logging
+logging_steps: 10
+save_steps: 200
+eval_steps: 200
+report_to: "none"               # or "wandb"
+seed: 42

@@ -54,6 +54,7 @@ from data_utils import (
     STYLE_NAMES,
     STYLE_DISPLAY_NAMES,
 )
+from logging_utils import DistillLoggingCallback
 from model_utils import get_model_name, load_tokenizer, load_model
 
 
@@ -589,6 +590,13 @@ def main():
         distill_alpha=args.distill_alpha,
         distill_temperature=args.distill_temperature,
         teacher_client=teacher_client,
+        callbacks=[
+            DistillLoggingCallback(
+                distill_mode=args.distill_mode,
+                alpha=args.distill_alpha,
+                temperature=args.distill_temperature,
+            ),
+        ],
     )
 
     # --- Print summary ---

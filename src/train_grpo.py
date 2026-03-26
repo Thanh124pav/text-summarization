@@ -23,6 +23,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from trl import GRPOConfig, GRPOTrainer
 
 from data_utils import build_dataset, format_prompt, STYLE_NAMES
+from logging_utils import GRPOLoggingCallback
 from model_utils import get_model_name, load_tokenizer, load_model
 
 
@@ -524,6 +525,9 @@ def main():
         train_dataset=train_dataset,
         reward_funcs=reward_fns,
         reward_weights=reward_weights,
+        callbacks=[
+            GRPOLoggingCallback(sample_every=args.logging_steps * 10),
+        ],
     )
 
     print("Starting GRPO training...")

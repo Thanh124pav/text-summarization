@@ -8,6 +8,7 @@ from transformers import TrainingArguments
 from trl import SFTTrainer, SFTConfig
 
 from data_utils import build_dataset, format_prompt
+from logging_utils import SFTLoggingCallback
 from model_utils import get_model_name, load_tokenizer, load_model
 
 
@@ -91,12 +92,25 @@ def main():
         gradient_checkpointing=True,
     )
 
+    # Build demo prompts for sample generation during training
+    demo_prompts = []
+    raw_data = build_dataset(args.train_data)
+    for item in raw_data.select(range(min(3, len(raw_data)))):
+        demo_prompts.append(format_prompt(item["input"], item.get("category")))
+
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         processing_class=tokenizer,
+        callbacks=[
+            SFTLoggingCallback(
+                tokenizer=tokenizer,
+                demo_prompts=demo_prompts,
+                sample_every=args.save_steps,
+            ),
+        ],
     )
 
     print("Starting SFT training...")

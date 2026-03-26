@@ -36,6 +36,7 @@ from data_utils import (
     STYLE_NAMES,
     STYLE_DISPLAY_NAMES,
 )
+from logging_utils import SFTLoggingCallback
 from model_utils import get_model_name, load_tokenizer, load_model
 
 
@@ -302,12 +303,26 @@ def main():
         dataloader_num_workers=4,
     )
 
+    # Build demo prompts for sample generation during training
+    demo_prompts = []
+    for item in raw_train.select(range(min(3, len(raw_train)))):
+        cat = item.get("category")
+        sty = item.get("style") or random.choice(STYLE_NAMES)
+        demo_prompts.append(format_prompt(item["input"], cat, sty))
+
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         processing_class=tokenizer,
+        callbacks=[
+            SFTLoggingCallback(
+                tokenizer=tokenizer,
+                demo_prompts=demo_prompts,
+                sample_every=args.save_steps,
+            ),
+        ],
     )
 
     # Print config summary
